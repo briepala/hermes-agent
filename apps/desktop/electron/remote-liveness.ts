@@ -95,15 +95,36 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
 
   try {
     connection = await connectionPromise
+  } catch {
+    // The cached boot already rejected; its own recovery path will clear it.
+    return reconnect()
+  }
 
-    if (currentConnectionPromise() !== connectionPromise) {
-      return reconnect()
-    }
+  if (currentConnectionPromise() !== connectionPromise) {
+    return reconnect()
+  }
 
+  try {
     await probe(connection, '/api/status', {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
   } catch (error) {
+    // A probe TIMEOUT is not proof of death. A remote backend answers late
+    // while it restores detached sessions at boot or saturates its event loop
+    // with concurrent turns, and a genuinely dead peer behind a live tunnel
+    // refuses/resets instead of hanging. Retiring on timeout killed healthy
+    // backends mid-turn and respawned them over their own live sessions —
+    // the crash loop this gate exists to break. Serve the descriptor and let
+    // the WS/JSON-RPC layer's bounded reconnect ladder own unreachability;
+    // connection errors still retire immediately.
+    if (error instanceof Error && /timed out/i.test(error.message)) {
+      if (currentConnectionPromise() !== connectionPromise) {
+        return reconnect()
+      }
+
+      return connection
+    }
+
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)
     }

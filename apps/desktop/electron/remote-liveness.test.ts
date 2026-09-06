@@ -298,6 +298,70 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
   })
+
+  it('serves a pooled backend whose probe times out instead of killing it', async () => {
+    // The crash-loop contract (ace, Sep 2026): a remote backend answers the
+    // probe late while restoring detached sessions at boot or saturating its
+    // event loop with concurrent turns — switching gateways triggers exactly
+    // this dispatch. A timeout is not proof of death: the descriptor must
+    // reach dispatch and the WS/JSON-RPC reconnect ladder owns recovery,
+    // because retiring here also kills the child over SSH mid-turn.
+    const busy = { baseUrl: 'http://127.0.0.1:41221', mode: 'remote' }
+    const busyPromise = Promise.resolve(busy)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn(async () => busy)
+    const probe = vi.fn(async () => {
+      throw new Error('Timed out connecting to Hermes backend after 2500ms')
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: busyPromise,
+        currentConnectionPromise: () => busyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(busy)
+
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retires a pooled backend that refuses connections instead of serving it', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:41222', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:41223', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    const probe = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:41222')
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(replacement)
+
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
 })
 
 describe('revalidatePooledRemoteBackends', () => {
