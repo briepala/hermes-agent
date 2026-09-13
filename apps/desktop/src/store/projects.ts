@@ -262,6 +262,31 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   }
 }
 
+// A project's shared-context files (Cursor-Projects parity): what every future
+// agent in the project reads. Backend truth is projects.db; these atoms are the
+// entered project's cache, scoped to whichever id was requested last.
+export interface ProjectContextFile {
+  name: string
+  size: number
+  updated_at: null | string
+  updated_by: null | string
+}
+
+// Cron jobs bound to the project (subscriptions). `enabled` is the
+// scheduler-honoured flag; `state` is the derived paused/running label.
+export interface ProjectJob {
+  enabled: boolean
+  job_id: string
+  name: string
+  next_run_at: null | string
+  schedule: string
+  state: null | string
+}
+
+export const $projectContextFiles = atom<ProjectContextFile[]>([])
+export const $projectJobs = atom<ProjectJob[]>([])
+let projectContextRefreshGeneration = 0
+
 // Issue a request on whichever gateway is currently active, reconnecting once
 // if the socket dropped. Projects are per-profile, so they intentionally follow
 // the active gateway just like the session list does.
@@ -546,6 +571,59 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 
     throw error
   }
+}
+
+// Shared context + subscriptions for the entered project. Generation-guarded so a
+// departed project's slow response can't overwrite the next project's list.
+export async function refreshProjectContext(projectId: string): Promise<void> {
+  const generation = ++projectContextRefreshGeneration
+
+  try {
+    const [ctx, jobs] = await Promise.all([
+      gatewayRequest<{ files: ProjectContextFile[] }>('projects.context_list', projectParams({ id: projectId })),
+      gatewayRequest<{ jobs: ProjectJob[] }>('projects.jobs', projectParams({ id: projectId })),
+    ])
+
+    if (generation !== projectContextRefreshGeneration) {
+      return
+    }
+
+    $projectContextFiles.set(ctx.files ?? [])
+    $projectJobs.set(jobs.jobs ?? [])
+  } catch (error) {
+    if (generation !== projectContextRefreshGeneration) {
+      return
+    }
+
+    if (isMissingRpcMethod(error)) {
+      $projectsRpcAvailable.set(false)
+
+      return
+    }
+
+    throw error
+  }
+}
+
+export async function readProjectContextFile(projectId: string, name: string): Promise<null | string> {
+  const res = await gatewayRequest<{ file: { content: string } }>(
+    'projects.context_get', projectParams({ id: projectId, name }))
+
+  return res.file?.content ?? null
+}
+
+export async function writeProjectContextFile(
+  projectId: string,
+  name: string,
+  content: string
+): Promise<void> {
+  await gatewayRequest('projects.context_set', projectParams({ id: projectId, name, content }))
+  await refreshProjectContext(projectId)
+}
+
+export async function deleteProjectContextFile(projectId: string, name: string): Promise<void> {
+  await gatewayRequest('projects.context_delete', projectParams({ id: projectId, name }))
+  await refreshProjectContext(projectId)
 }
 
 interface WorkspaceMovePayload {

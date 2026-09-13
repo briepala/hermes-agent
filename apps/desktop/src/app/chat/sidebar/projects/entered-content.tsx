@@ -16,6 +16,7 @@ import { removeWorktreePath } from '@/store/projects'
 import { SidebarRowStack } from '../chrome'
 
 import { useWorkspaceNodeOpen } from './model'
+import { ProjectContextSection } from './project-context-section'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
@@ -61,6 +62,7 @@ export function EnteredProjectContent({
 
   return (
     <>
+      {!project.isAuto && <ProjectContextSection projectId={project.id} />}
       {project.repos.map(repo => (
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}

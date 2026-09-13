@@ -2255,6 +2255,16 @@ export interface Translations {
       sectionLabel: string
       home: string
       autoDiscovered: string
+      contextTitle: string
+      contextEmpty: string
+      contextNewFile: string
+      contextLoadFailed: string
+      contextSaveFailed: string
+      contextSave: string
+      contextCancel: string
+      contextDeleteConfirm: (name: string) => string
+      subscriptionsTitle: string
+      subsEmpty: string
       newButton: string
       createTitle: string
       createDesc: string
