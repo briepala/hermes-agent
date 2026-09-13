@@ -888,3 +888,64 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+
+
+# --- Shared context (Cursor-Projects parity) ----------------------------------
+
+def _ctx_err(method, params):
+    handler = server._methods[method]
+    resp = handler(1, params)
+    assert "error" in resp, resp
+    return resp["error"]
+
+
+def test_context_rpc_roundtrip(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    token = set_hermes_home_override(str(home))
+    try:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        created = _call("projects.create", {"name": "Ctx", "folders": [str(repo)]})
+        pid = created["project"]["id"]
+
+        _call("projects.context_set", {"id": pid, "name": "CONTEXT.md", "content": "# hi"})
+        files = _call("projects.context_list", {"id": pid})["files"]
+        assert [f["name"] for f in files] == ["CONTEXT.md"]
+
+        got = _call("projects.context_get", {"id": pid, "name": "CONTEXT.md"})["file"]
+        assert got["content"] == "# hi"
+
+        err = _ctx_err("projects.context_get", {"id": pid, "name": "NOPE.md"})
+        assert "NOPE.md" in err["message"]
+
+        assert _call("projects.context_delete", {"id": pid, "name": "CONTEXT.md"})["ok"] is True
+        assert _call("projects.context_list", {"id": pid})["files"] == []
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_projects_jobs_lists_only_bound_jobs(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    token = set_hermes_home_override(str(home))
+    try:
+        import cron.jobs as cron_jobs
+        monkeypatch.setattr(cron_jobs, "CRON_DIR", home / "cron")
+        monkeypatch.setattr(cron_jobs, "JOBS_FILE", home / "cron" / "jobs.json")
+        (home / "cron").mkdir(parents=True, exist_ok=True)
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        created = _call("projects.create", {"name": "Jobs", "folders": [str(repo)]})
+        pid = created["project"]["id"]
+
+        cron_jobs.save_jobs([
+            {"id": "free", "name": "f", "repeat": "1h", "enabled": True, "prompt": "y"},
+        ])
+        cron_jobs.create_job(name="b", schedule="0 9 * * *", prompt="x", project_id=pid)
+        jobs = _call("projects.jobs", {"id": pid})["jobs"]
+        assert [j["job_id"] for j in jobs] != []
+        assert all(j["job_id"] != "free" for j in jobs)
+    finally:
+        reset_hermes_home_override(token)

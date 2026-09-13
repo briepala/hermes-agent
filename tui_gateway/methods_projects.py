@@ -11,6 +11,7 @@ method = _registry.method
 
 # JSON-RPC error codes: generic failure / id resolved to nothing / invalid argument.
 _E_PROJECTS, _E_NO_PROJECT, _E_PROJECT_ARG = 5061, 5062, 5063
+_E_NO_CONTEXT_FILE = 5064
 
 
 class _NoProject(Exception):
@@ -116,6 +117,55 @@ def _(rid, params, pdb, conn) -> dict:
 def _(rid, params, pdb, conn) -> dict:
     pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+
+
+# Shared context (Cursor-Projects parity): files that teach every future agent in the project.
+@_projects_method("projects.context_list")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    return _ok(rid, {"files": pdb.list_context_files(conn, proj.id)})
+
+
+@_projects_method("projects.context_get")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    name = str(params.get("name") or "")
+    row = pdb.get_context_file(conn, proj.id, name)
+    if row is None:
+        return _err(rid, _E_NO_CONTEXT_FILE, f"no context file named {name!r}")
+    return _ok(rid, {"file": row})
+
+
+@_projects_method("projects.context_set")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    row = pdb.set_context_file(
+        conn, proj.id, str(params.get("name") or ""), str(params.get("content") or ""),
+        updated_by=str(params.get("updated_by") or "user"))
+    return _ok(rid, {"file": row})
+
+
+@_projects_method("projects.context_delete")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    removed = pdb.delete_context_file(conn, proj.id, str(params.get("name") or ""))
+    return _ok(rid, {"ok": removed})
+
+
+@_projects_method("projects.jobs")
+def _(rid, params, pdb, conn) -> dict:
+    """Cron jobs bound to this project (subscriptions). Cross-module: reads cron's job store."""
+    proj = _require_project(pdb, conn, params)
+    from cron.jobs import list_jobs
+    rows = [
+        {"job_id": j.get("id"), "name": j.get("name"),
+         "schedule": j.get("schedule_display") or j.get("schedule"),
+         "next_run_at": j.get("next_run_at"), "enabled": j.get("enabled", True),
+         "state": j.get("state")}
+        for j in list_jobs(include_disabled=True)
+        if j.get("project_id") == proj.id
+    ]
+    return _ok(rid, {"jobs": rows})
 
 
 @_projects_method("projects.for_cwd")
