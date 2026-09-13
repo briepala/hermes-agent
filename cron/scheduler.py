@@ -1237,14 +1237,41 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
 
 
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
-    """Configured job workdir, or None when unset / no longer a directory (logged)."""
+    """Configured job workdir, or None when unset / no longer a directory (logged).
+
+    A job bound to a project (``project_id``, Cursor-Projects subscriptions) with no explicit
+    workdir runs in the project's primary folder: the cron session then loads the project's
+    shared context automatically (scheduler passes skip_context_files=not bool(workdir))."""
     workdir = (job.get("workdir") or "").strip() or None
+    if not workdir:
+        project_id = (job.get("project_id") or "").strip() or None
+        if project_id:
+            workdir = _project_primary_path(project_id)
+            if workdir:
+                logger.debug("Job '%s': project %s workdir %s", job_id, project_id, workdir)
     if workdir and not Path(workdir).is_dir():
         logger.warning(
             "Job '%s': configured workdir %r no longer exists — running without it",
             job_id, workdir)
         return None
     return workdir
+
+
+def _project_primary_path(project_id: str) -> Optional[str]:
+    """Primary folder of ``project_id`` from the per-profile projects.db; None on any failure
+    (unknown project, missing DB) — a stale binding must never wedge the ticker."""
+    with contextlib.suppress(Exception):
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as conn:
+            proj = pdb.get_project(conn, project_id)
+            if proj is None:
+                return None
+            primary = (
+                getattr(proj, "primary_path", None)
+                or next((f.path for f in proj.folders if f.is_primary), None)
+                or (proj.folders[0].path if proj.folders else None))
+            return primary or None
+    return None
 
 
 def _run_no_agent_job(

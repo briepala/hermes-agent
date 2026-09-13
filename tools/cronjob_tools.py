@@ -579,6 +579,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            project_id=_resolve_project_id(_normalize_optional_job_value(a["project"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -782,6 +783,10 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
     if a["workdir"] is not None:
         # Empty string clears; otherwise update_job() validates/normalizes.
         updates["workdir"] = _normalize_optional_job_value(a["workdir"]) or None
+    if a["project"] is not None:
+        # Empty string clears the binding; a name/slug/id resolves, unknown tokens clear
+        # with the resolver returning None (matches create's degrade-not-fail posture).
+        updates["project_id"] = _resolve_project_id(_normalize_optional_job_value(a["project"]))
     if a["no_agent"] is not None:
         # Flipping to True needs a script on the job or in this same update.
         target_no_agent = bool(a["no_agent"])
@@ -923,6 +928,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    project: Optional[str] = None,
     all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
@@ -949,6 +955,25 @@ def cronjob(
         return handler(job, a)
     except Exception as e:
         return tool_error(str(e), success=False)
+
+
+def _resolve_project_id(project: Optional[str]) -> Optional[str]:
+    """Name/slug/id → project id (Cursor-Projects subscriptions). None/unknown → None; a
+    typo degrades to an unbound job rather than failing creation."""
+    token = (project or "").strip()
+    if not token:
+        return None
+    with contextlib.suppress(Exception):
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as conn:
+            for proj in pdb.list_projects(conn, include_archived=True):
+                if token in (proj.id, proj.slug) or proj.name == token:
+                    return proj.id
+            low = token.lower()
+            for proj in pdb.list_projects(conn, include_archived=True):
+                if proj.slug.lower() == low or proj.name.lower() == low:
+                    return proj.id
+    return None
 
 
 def _script_description(home: str) -> str:
@@ -1050,6 +1075,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
+            },
+            "project": {
+                "type": "string",
+                "description": "Bind the job to a desktop Project (name/slug/id): the job runs from the project's primary folder and every run loads the project's shared context automatically (project subscriptions). An explicit workdir overrides the folder."
             },
             "attach_to_session": {
                 "type": "boolean",
