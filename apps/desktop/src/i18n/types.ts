@@ -2256,6 +2256,8 @@ export interface Translations {
       home: string
       autoDiscovered: string
       contextTitle: string
+      coordinateTitle: string
+      coordinateDraft: string
       contextEmpty: string
       contextNewFile: string
       contextLoadFailed: string

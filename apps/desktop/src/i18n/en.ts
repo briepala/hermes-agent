@@ -2630,6 +2630,9 @@ export const en: Translations = {
       home: 'Home',
       autoDiscovered: 'Auto-discovered',
       contextTitle: 'Shared context',
+      coordinateTitle: 'Coordinate: start a session that plans, delegates, and verifies',
+      coordinateDraft:
+        'You are the coordinator for this project. Plan the work, delegate implementation to subagents, and verify their results. Start by reading the shared context files and listing the project folders.',
       contextEmpty: 'No shared context yet. Files here are read by every agent working in this project.',
       contextNewFile: 'New context file',
       contextLoadFailed: 'Could not load project context',

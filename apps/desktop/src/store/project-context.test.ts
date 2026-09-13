@@ -48,6 +48,15 @@ function fakeGateway(answers: Record<string, unknown> = {}, rejectWith?: Error) 
   } as never
 }
 
+// Same shape the sibling projects.test.ts uses: a promise the test resolves on demand.
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   activeGateway.mockReset()
   $projectContextFiles.set([])
@@ -69,21 +78,18 @@ describe('project shared context + subscriptions cache', () => {
   })
 
   it('a slow response for a departed project never lands (generation guard)', async () => {
-    let releaseContext: ((value: { files: never[] }) => void) | null = null
-
-    const gate = new Promise<{ files: never[] }>(resolve => {
-      releaseContext = resolve
-    })
+    type CtxList = { files: Array<{ name: string; size: number; updated_at: null; updated_by: null }> }
+    const gate = deferred<CtxList>()
 
     activeGateway.mockReturnValue(fakeGateway({
-      'projects.context_list': gate,
+      'projects.context_list': gate.promise,
       'projects.jobs': { jobs: [] }
     }))
 
     const first = refreshProjectContext('p1')
     const second = refreshProjectContext('p2')
 
-    releaseContext?.({ files: [] })
+    gate.resolve({ files: [] })
     await Promise.all([first, second])
 
     // p1's late answer arrived after p2 superseded it; the atoms must not carry it.

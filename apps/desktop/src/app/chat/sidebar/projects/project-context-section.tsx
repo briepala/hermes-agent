@@ -11,6 +11,7 @@ import {
   deleteProjectContextFile,
   readProjectContextFile,
   refreshProjectContext,
+  requestStartWorkSession,
   writeProjectContextFile
 } from '@/store/projects'
 
@@ -19,7 +20,13 @@ import { SidebarRowStack } from '../chrome'
 // Shared context + subscriptions panels for the entered project
 // (Cursor-Projects parity). Auto projects and the synthetic Home bucket have
 // no projects.db row behind them, so the panels render nothing there.
-export function ProjectContextSection({ projectId }: { projectId: string }) {
+export function ProjectContextSection({
+  projectId,
+  projectRootPath
+}: {
+  projectId: string
+  projectRootPath: null | string
+}) {
   const { t } = useI18n()
   const s = t.sidebar.projects
   const files = useStore($projectContextFiles)
@@ -78,6 +85,13 @@ export function ProjectContextSection({ projectId }: { projectId: string }) {
         files={files}
         jobs={jobs}
         onAdd={() => setEditing({ content: '', name: '' })}
+        onCoordinate={() => {
+          // Seed a session at the project root whose first turn hands the
+          // coordinator role to the agent (plan → delegate → verify).
+          if (projectRootPath) {
+            requestStartWorkSession(projectRootPath, s.coordinateDraft, { openTab: true })
+          }
+        }}
         onDelete={name => void remove(name)}
         onEdit={() => viewing && setEditing({ content: viewing.content, name: viewing.name })}
         onOpen={name => void openFile(name)}
@@ -95,6 +109,7 @@ export function ProjectContextSection({ projectId }: { projectId: string }) {
 // keep the branching minimal. Props bag beats threading eight callbacks twice.
 function ContextPanel(props: {
   editing: null | { content: string; name: string }
+  onCoordinate: () => void
   files: { name: string; size: number }[]
   jobs: { enabled: boolean; job_id: string; name: string; next_run_at: null | string; schedule: string; state: null | string }[]
   onAdd: () => void
@@ -113,11 +128,21 @@ function ContextPanel(props: {
     <>
       <SectionShell
         action={
-          <Codicon
-            className="cursor-pointer text-(--ui-text-tertiary) hover:text-(--ui-text-primary)"
-            name="add"
-            onClick={props.onAdd}
-          />
+          <>
+            <button
+              className="cursor-pointer text-(--ui-text-tertiary) hover:text-(--ui-text-primary)"
+              onClick={props.onCoordinate}
+              title={s.coordinateTitle}
+              type="button"
+            >
+              <Codicon name="rocket" size="0.75rem" />
+            </button>
+            <Codicon
+              className="cursor-pointer text-(--ui-text-tertiary) hover:text-(--ui-text-primary)"
+              name="add"
+              onClick={props.onAdd}
+            />
+          </>
         }
         icon="notebook"
         label={s.contextTitle}

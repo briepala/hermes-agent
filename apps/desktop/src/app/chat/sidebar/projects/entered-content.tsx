@@ -62,7 +62,7 @@ export function EnteredProjectContent({
 
   return (
     <>
-      {!project.isAuto && <ProjectContextSection projectId={project.id} />}
+      {!project.isAuto && <ProjectContextSection projectId={project.id} projectRootPath={project.path} />}
       {project.repos.map(repo => (
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
