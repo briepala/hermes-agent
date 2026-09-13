@@ -116,11 +116,82 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
     return _activated(proj, task_id)
 
 
+def _resolve_or_active(conn, token: str):
+    """`_resolve` with the schema-promised fallback to the ACTIVE project (project_meta KV)."""
+    from hermes_cli import projects_db as pdb
+    resolved = _resolve(conn, token)
+    if resolved is not None:
+        return resolved
+    active_id = pdb.get_active_id(conn)
+    return pdb.get_project(conn, active_id) if active_id else None
+
+
+# Shared context (Cursor-Projects parity): project-scoped files every future agent
+# (session, subagent, cron) reads automatically when working inside the project.
+def project_context_list(project: str) -> str:
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        proj = _resolve_or_active(conn, project)
+        if proj is None:
+            return json.dumps({"success": False, "error": f"no project matching '{project}'"})
+        return json.dumps({"success": True, "id": proj.id, "files": pdb.list_context_files(conn, proj.id)})
+
+
+def project_context_read(project: str, name: str) -> str:
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        proj = _resolve_or_active(conn, project)
+        if proj is None:
+            return json.dumps({"success": False, "error": f"no project matching '{project}'"})
+        try:
+            row = pdb.get_context_file(conn, proj.id, name)
+        except ValueError as exc:
+            return json.dumps({"success": False, "error": str(exc)})
+    if row is None:
+        return json.dumps({"success": False, "error": f"no context file named '{name}'"})
+    return json.dumps({"success": True, **row})
+
+
+def project_context_write(project: str, name: str, content: str, task_id: Optional[str] = None) -> str:
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        proj = _resolve_or_active(conn, project)
+        if proj is None:
+            return json.dumps({"success": False, "error": f"no project matching '{project}'"})
+        try:
+            row = pdb.set_context_file(
+                conn, proj.id, name, content, updated_by=f"agent:{task_id}" if task_id else "agent")
+        except ValueError as exc:
+            return json.dumps({"success": False, "error": str(exc)})
+    return json.dumps({
+        "success": True, "name": row["name"], "updated_at": row["updated_at"], "updated_by": row["updated_by"],
+        "note": "loaded into the system prompt of every future session/subagent/cron working inside this project"})
+
+
 _ACTIONS = {
     "list": lambda args, tid: project_list(task_id=tid),
     "create": lambda args, tid: project_create(
         name=args.get("name", ""), path=args.get("path"), task_id=tid),
-    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid)}
+    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid),
+    "context_list": lambda args, tid: project_context_list(project=args.get("project", "")),
+    "context_read": lambda args, tid: project_context_read(project=args.get("project", ""), name=args.get("name", "")),
+    "context_write": lambda args, tid: project_context_write(
+        project=args.get("project", ""), name=args.get("name", ""), content=args.get("content", ""), task_id=tid),
+    "context_delete": lambda args, tid: _project_context_delete(project=args.get("project", ""), name=args.get("name", "")),
+}
+
+
+def _project_context_delete(project: str, name: str) -> str:
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing() as conn:
+        proj = _resolve_or_active(conn, project)
+        if proj is None:
+            return json.dumps({"success": False, "error": f"no project matching '{project}'"})
+        try:
+            removed = pdb.delete_context_file(conn, proj.id, name)
+        except ValueError as exc:
+            return json.dumps({"success": False, "error": str(exc)})
+    return json.dumps({"success": removed, "name": name})
 
 
 def _handle_project(args, **kw):
@@ -143,14 +214,21 @@ registry.register(
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
             "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which is active."
+            "intentional way to move the session, not `cd`. list: all projects + which is active. "
+            "context_*: the project's shared-context files, loaded into the system prompt of "
+            "every future session/subagent/cron working inside the project — when you learn "
+            "something durable (how to build/test/review this repo, user's preferred process), "
+            "write it with context_write so every future agent starts knowing it."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["create", "switch", "list"]},
-                "name": {"type": "string", "description": "create: human name. switch: name, slug, or id."},
+                "action": {"type": "string", "enum": ["create", "switch", "list",
+                                                      "context_list", "context_read", "context_write", "context_delete"]},
+                "name": {"type": "string", "description": "create: human name. switch: name/slug/id. context_read/write/delete: file name (e.g. TESTING.md)."},
                 "path": {"type": "string", "description": "create: repo/folder to anchor to."},
+                "project": {"type": "string", "description": "context_*: project name/slug/id (defaults to the active project)."},
+                "content": {"type": "string", "description": "context_write: full file content (markdown)."},
             },
             "required": ["action"],
         },
