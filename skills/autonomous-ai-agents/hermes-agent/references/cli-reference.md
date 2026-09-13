@@ -120,7 +120,7 @@ hermes dashboard            Web admin panel + embedded chat (--stop / --status)
 hermes proxy                OpenAI-compatible local proxy backed by an OAuth provider
 hermes portal               Quick setup / sign in via Nous Portal
 hermes kanban <verb>        Multi-agent work-queue board
-hermes project              Named multi-folder workspaces
+hermes project              Named multi-folder workspaces with shared context (agents in the project all read/write it) and project-bound cron subscriptions; `hermes cron create --project <name>` binds a job
 hermes skin list|use|set    Switch/tweak skins (see references/themes.md)
 hermes pets <verb>          Pet mascots (see references/petdex.md)
 hermes memory setup|status|off|reset   Memory provider
