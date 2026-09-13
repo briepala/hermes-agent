@@ -130,6 +130,32 @@ def _print_project(proj) -> None:
             print(f"   {' *' if f.is_primary else '  '} {f.path}{f' ({f.label})' if f.label else ''}")
 
 
+def _print_project_context_files(conn, proj) -> None:
+    """Shared-context section of `project show` (Cursor-Projects parity)."""
+    try:
+        files = pdb.list_context_files(conn, proj.id)
+    except Exception:
+        return
+    if files:
+        print("  context:")
+        for cf in files:
+            print(f"      {cf['name']}  ({cf['size']} bytes, by {cf['updated_by'] or 'unknown'})")
+
+
+def _print_project_cron_jobs(proj) -> None:
+    """Bound-subscriptions section of `project show`; read-only, best-effort."""
+    try:
+        from cron import jobs as cron_jobs
+        bound = [j for j in cron_jobs.load_jobs() if j.get("project_id") == proj.id]
+    except Exception:
+        return
+    if bound:
+        print("  subscriptions:")
+        for j in bound:
+            state = "paused" if not j.get("enabled", True) else j.get("repeat", "")
+            print(f"      {j.get('name', j.get('id', '?'))}  [{j.get('id', '?')}] {state}")
+
+
 @_db_command
 def _cmd_create(args, conn) -> int:
     pid = pdb.create_project(
@@ -162,6 +188,8 @@ def _cmd_list(args, conn):
 @_with_project
 def _cmd_show(args, conn, proj) -> int:
     _print_project(proj)
+    _print_project_context_files(conn, proj)
+    _print_project_cron_jobs(proj)
     return 0
 
 
