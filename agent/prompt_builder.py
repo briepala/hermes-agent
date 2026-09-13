@@ -1581,6 +1581,31 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
                              read_path=str(cwd_path / ".cursorrules"))
 
 
+def _load_project_shared_context(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """Shared project context (Cursor-Projects parity) for the project OWNING ``cwd_path``.
+
+    Runs in addition to the first-match-wins chain above (it lives in projects.db, not on
+    disk, so it never competes with AGENTS.md etc.). Best-effort: any failure (no DB, locked,
+    unparsable) yields "" — prompt build must never fail because of it. Same read-once,
+    byte-stable-per-conversation contract as the other context sections."""
+    try:
+        from hermes_cli import projects_db as pdb
+        with pdb.connect_closing() as conn:
+            proj = pdb.project_for_path(conn, str(cwd_path))
+            if proj is None:
+                return ""
+            rendered = pdb.load_project_context_prompt(conn, proj.id)
+    except Exception:
+        logger.debug("project shared-context load failed", exc_info=True)
+        return ""
+    if not rendered.strip():
+        return ""
+    scanned = _scan_context_content(rendered, "project shared context")
+    return _truncate_content(
+        f"# Project Shared Context — {proj.name}\n\n{scanned}", "project shared context",
+        context_length=context_length, read_path=str(cwd_path))
+
+
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1610,6 +1635,9 @@ def build_context_files_prompt(
                     or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
+    shared = _load_project_shared_context(cwd_path, context_length)
+    if shared:
+        sections.append(shared)
     sections = [s for s in sections if s]
     if not sections:
         return ""
