@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS project_meta (
     value  TEXT
 );
 
+-- Shared per-project context files (Cursor-Projects parity): every agent (main
+-- session, subagent, cron) working inside a project folder sees these, so one
+-- agent's discoveries (how to test, build, review) teach all future agents.
+CREATE TABLE IF NOT EXISTS project_context (
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    updated_at  INTEGER NOT NULL,
+    updated_by  TEXT,
+    PRIMARY KEY (project_id, name)
+);
+
 -- Git repos found by scanning the filesystem (desktop "repo-first" discovery).
 -- Cached here so the overview is instant after the first scan instead of
 -- re-walking the disk every time the Projects view opens.
@@ -373,6 +385,91 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 # --- Active-project pointer + discovery policy (project_meta KV) --------------
+
+# Shared context files: name shape is filename-like (CONTEXT.md, TESTING.md).
+_CONTEXT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-]{0,63}$")
+_CONTEXT_FILES_MAX = 4
+_CONTEXT_FILE_MAX_CHARS = 8000
+
+
+def normalize_context_name(name: str) -> str:
+    """Validate + normalize a shared-context file name; raises ValueError."""
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("context file name must not be empty")
+    if not _CONTEXT_NAME_RE.match(n):
+        raise ValueError(
+            f"invalid context file name {name!r}: 1-64 chars, alphanumerics / spaces / . _ -, "
+            "not starting with a separator")
+    return n
+
+
+def list_context_files(conn: sqlite3.Connection, project_id: str) -> List[dict]:
+    return [
+        {"name": r["name"], "updated_at": r["updated_at"], "updated_by": r["updated_by"], "size": len(r["content"] or "")}
+        for r in conn.execute(
+            "SELECT name, updated_at, updated_by, content FROM project_context "
+            "WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()
+    ]
+
+
+def get_context_file(conn: sqlite3.Connection, project_id: str, name: str) -> Optional[dict]:
+    """One shared-context file incl. content, or None. Name is normalized, not guessed."""
+    row = conn.execute(
+        "SELECT name, content, updated_at, updated_by FROM project_context "
+        "WHERE project_id = ? AND name = ?", (project_id, normalize_context_name(name))).fetchone()
+    if row is None:
+        return None
+    return {"name": row["name"], "content": row["content"], "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+
+
+def set_context_file(
+    conn: sqlite3.Connection, project_id: str, name: str, content: str, *, updated_by: Optional[str] = None,
+) -> dict:
+    """Create or update one shared-context file (upsert). Returns the stored row."""
+    norm = normalize_context_name(name)
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+    now = _now()
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO project_context (project_id, name, content, updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(project_id, name) DO UPDATE SET content = excluded.content, "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (project_id, norm, str(content or ""), now, updated_by),
+        )
+    row = conn.execute(
+        "SELECT name, content, updated_at, updated_by FROM project_context "
+        "WHERE project_id = ? AND name = ?", (project_id, norm)).fetchone()
+    return {"name": row["name"], "content": row["content"], "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+
+
+def delete_context_file(conn: sqlite3.Connection, project_id: str, name: str) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM project_context WHERE project_id = ? AND name = ?",
+            (project_id, normalize_context_name(name)))
+    return cur.rowcount > 0
+
+
+def load_project_context_prompt(conn: sqlite3.Connection, project_id: str, *, max_chars_per_file: int = _CONTEXT_FILE_MAX_CHARS) -> str:
+    """Render the project's shared context as a prompt section (no outer header).
+
+    Bounded: at most ``_CONTEXT_FILES_MAX`` files, each truncated at
+    ``max_chars_per_file``. Most-recently-updated first. Empty string when none."""
+    rows = conn.execute(
+        "SELECT name, content FROM project_context WHERE project_id = ? ORDER BY updated_at DESC "
+        "LIMIT ?", (project_id, _CONTEXT_FILES_MAX)).fetchall()
+    parts: List[str] = []
+    for r in rows:
+        body = (r["content"] or "").strip()
+        if not body:
+            continue
+        if len(body) > max_chars_per_file:
+            body = body[:max_chars_per_file] + "\n[...truncated...]"
+        parts.append(f"## {r['name']}\n\n{body}")
+    return "\n\n".join(parts)
+
 
 def _upsert_meta_locked(conn: sqlite3.Connection, key: str, value: str) -> None:
     """Upsert a project_meta row (caller already holds a write txn)."""
